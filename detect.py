@@ -3,10 +3,14 @@ import sys
 from os import listdir
 from os.path import isfile, join
 from typing import Dict, List, Tuple
+from collections import defaultdict
 
 import imagehash
 import numpy as np
 from PIL import Image
+
+
+
 
 
 def calculate_signature(image_file: str, hash_size: int) -> np.ndarray:
@@ -22,7 +26,7 @@ def calculate_signature(image_file: str, hash_size: int) -> np.ndarray:
     """
     pil_image = Image.open(image_file).convert("L").resize(
                         (hash_size+1, hash_size),
-                        Image.ANTIALIAS)
+                        Image.Resampling.LANCZOS)
     dhash = imagehash.dhash(pil_image, hash_size)
     signature = dhash.hash.flatten()
     pil_image.close()
@@ -54,6 +58,7 @@ def find_near_duplicates(input_dir: str, threshold: float, hash_size: int, bands
         try:
             signature = calculate_signature(fh, hash_size)
         except IOError:
+            print("Not a PIL image encountered")
             # Not a PIL image, skip this file
             continue
 
@@ -83,10 +88,11 @@ def find_near_duplicates(input_dir: str, threshold: float, hash_size: int, bands
     # Check candidate pairs for similarity
     near_duplicates = list()
     for cpa, cpb in candidate_pairs:
-        hd = sum(np.bitwise_xor(
+        hd = int(np.bitwise_xor(
                 np.unpackbits(signatures[cpa]), 
                 np.unpackbits(signatures[cpb])
-        ))
+        ).sum())
+
         similarity = (hash_size**2 - hd) / hash_size**2
         if similarity > threshold:
             near_duplicates.append((cpa, cpb, similarity))
@@ -94,6 +100,55 @@ def find_near_duplicates(input_dir: str, threshold: float, hash_size: int, bands
     # Sort near-duplicates by descending similarity and return
     near_duplicates.sort(key=lambda x:x[2], reverse=True)
     return near_duplicates
+
+
+def group_similar_images(near_duplicates):
+    """
+    Groups images based on near-duplicate pairs.
+
+    Args:
+        near_duplicates: List of tuples (imgA, imgB, similarity)
+
+    Returns:
+        List of lists, where each inner list is a group of similar images.
+    """
+    parent = {}
+
+    # Initialize parent pointers for all images found in pairs
+    def make_set(x):
+        if x not in parent:
+            parent[x] = x
+
+    # Find root leader of group containing x
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]  # path compression
+            x = parent[x]
+        return x
+
+    # Union groups of x and y
+    def union(x, y):
+        root_x = find(x)
+        root_y = find(y)
+        if root_x != root_y:
+            parent[root_y] = root_x
+
+    # Initialize sets for all images in near_duplicates
+    for a, b, _ in near_duplicates:
+        make_set(a)
+        make_set(b)
+
+    # Union similar image pairs
+    for a, b, _ in near_duplicates:
+        union(a, b)
+
+    # Group images by their root leader
+    clusters = defaultdict(list)
+    for img in parent:
+        root = find(img)
+        clusters[root].append(img)
+
+    return list(clusters.values())
 
 
 def main(argv):
@@ -112,10 +167,9 @@ def main(argv):
 
     try:
         near_duplicates = find_near_duplicates(input_dir, threshold, hash_size, bands)
+        groups = group_similar_images(near_duplicates)
         if near_duplicates:
-            print(f"Found {len(near_duplicates)} near-duplicate images in {input_dir} (threshold {threshold:.2%})")
-            for a,b,s in near_duplicates:
-                print(f"{s:.2%} similarity: file 1: {a} - file 2: {b}")
+           print(groups)
         else:
             print(f"No near-duplicates found in {input_dir} (threshold {threshold:.2%})")
     except OSError:
