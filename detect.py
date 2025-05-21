@@ -2,15 +2,13 @@ import argparse
 import sys
 from os import listdir
 from os.path import isfile, join
+from os import walk
 from typing import Dict, List, Tuple
 from collections import defaultdict
 
 import imagehash
 import numpy as np
 from PIL import Image
-
-
-
 
 
 def calculate_signature(image_file: str, hash_size: int) -> np.ndarray:
@@ -33,7 +31,7 @@ def calculate_signature(image_file: str, hash_size: int) -> np.ndarray:
     return signature
 
         
-def find_near_duplicates(input_dir: str, threshold: float, hash_size: int, bands: int) -> List[Tuple[str, str, float]]:
+def find_near_duplicates(input_dir: str, threshold: float, hash_size: int, bands: int,include_SubFolders:bool ) -> List[Tuple[str, str, float]]:
     """
     Find near-duplicate images
     
@@ -42,6 +40,7 @@ def find_near_duplicates(input_dir: str, threshold: float, hash_size: int, bands
         threshold: Images with a similarity ratio >= threshold will be considered near-duplicates
         hash_size: Hash size to use, signatures will be of length hash_size^2
         bands: The number of bands to use in the locality sensitve hashing process
+        include_SubFolders: Whether to include subfolders in the directory
         
     Returns:
         A list of near-duplicates found. Near duplicates are encoded as a triple: (filename_A, filename_B, similarity)
@@ -51,11 +50,21 @@ def find_near_duplicates(input_dir: str, threshold: float, hash_size: int, bands
     hash_buckets_list: List[Dict[str, List[str]]] = [dict() for _ in range(bands)]
     
     # Build a list of candidate files in given input_dir
-    file_list = [join(input_dir, f) for f in listdir(input_dir) if isfile(join(input_dir, f))]
-
+    file_list = list()
+    if(include_SubFolders):
+        for root, dirs, files in walk(input_dir):
+            for f in files:
+                full_path = join(root, f)
+                if isfile(full_path):
+                    file_list.append(full_path)
+                    
+    else:
+        file_list = [join(input_dir, f) for f in listdir(input_dir) if isfile(join(input_dir, f))]
+                   
     # Iterate through all files in input directory
     for fh in file_list:
         try:
+            
             signature = calculate_signature(fh, hash_size)
         except IOError:
             print("Not a PIL image encountered")
@@ -93,7 +102,7 @@ def find_near_duplicates(input_dir: str, threshold: float, hash_size: int, bands
                 np.unpackbits(signatures[cpb])
         ).sum())
 
-        similarity = (hash_size**2 - hd) / hash_size**2
+        similarity = (hash_size**2 - hd) / hash_size**2        
         if similarity > threshold:
             near_duplicates.append((cpa, cpb, similarity))
             
@@ -158,18 +167,22 @@ def main(argv):
     parser.add_argument("-t", "--threshold", type=float, default=0.9, help="similarity threshold")
     parser.add_argument("-s", "--hash-size", type=int, default=16, help="hash size to use, signature length = hash_size^2", dest="hash_size")
     parser.add_argument("-b", "--bands", type=int, default=16, help="number of bands")
+    parser.add_argument("--incl", action="store_true", help="include subfolders in image search")
 
     args = parser.parse_args()
     input_dir = args.inputdir
     threshold = args.threshold
     hash_size = args.hash_size
     bands = args.bands
+    include_subfolders = args.incl
+
 
     try:
-        near_duplicates = find_near_duplicates(input_dir, threshold, hash_size, bands)
-        groups = group_similar_images(near_duplicates)
+        near_duplicates = find_near_duplicates(input_dir, threshold, hash_size, bands,include_subfolders)
         if near_duplicates:
-           print(groups)
+            print(f"Found {len(near_duplicates)} near-duplicate images in {input_dir} (threshold {threshold:.2%})")
+            for a,b,s in near_duplicates:
+                print(f"{s:.2%} similarity: file 1: {a} - file 2: {b}")
         else:
             print(f"No near-duplicates found in {input_dir} (threshold {threshold:.2%})")
     except OSError:
